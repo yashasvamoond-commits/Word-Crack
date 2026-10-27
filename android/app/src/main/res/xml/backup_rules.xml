@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WebView localStorage (WordCraft preferences) and IndexedDB live in the app's data directory and
+  are backed up with the default rules. Cached downloads are excluded.
+-->
+<full-backup-content>
+    <exclude domain="cache" path="." />
+</full-backup-content>

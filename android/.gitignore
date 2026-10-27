@@ -1,0 +1,16 @@
+# Gradle / Android build output
+.gradle/
+build/
+app/build/
+local.properties
+captures/
+.cxx/
+
+# The Trunk-built site is staged here by android/ci/copy_web_assets.sh during CI.
+# Keep the directory itself (and this ignore rule) tracked.
+/app/src/main/assets/web/*
+!/app/src/main/assets/web/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]

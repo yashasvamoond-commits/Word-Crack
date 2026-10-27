@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WordCraft</string>
+    <string name="saved_to_downloads">Saved %1$s to Downloads/WordCraft</string>
+    <string name="save_failed">Couldn\'t save the file</string>
+    <string name="open_failed">No app available to open this file</string>
+</resources>
