@@ -4,6 +4,11 @@ name: Debug Shell Only
 # skipping the ~10 minute WASM build. Removed once the main pipeline is green.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - arena/ff59cc86-word-crack
+    paths:
+      - .github/workflows/debug-shell.yml
 
 permissions:
   contents: read
