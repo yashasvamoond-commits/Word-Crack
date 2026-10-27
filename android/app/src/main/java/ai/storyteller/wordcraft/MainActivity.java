@@ -75,7 +75,7 @@ public class MainActivity extends AppCompatActivity {
                     return;
                 }
                 if (result.getResultCode() != RESULT_OK || result.getData() == null) {
-                    callback.onReceiveResult(null);
+                    callback.onReceiveValue(null);
                     return;
                 }
                 Intent data = result.getData();
@@ -96,7 +96,7 @@ public class MainActivity extends AppCompatActivity {
                         // covers reading the document during this session.
                     }
                 }
-                callback.onReceiveResult(uris.toArray(new Uri[0]));
+                callback.onReceiveValue(uris.toArray(new Uri[0]));
             });
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -308,7 +308,7 @@ public class MainActivity extends AppCompatActivity {
         public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
                 FileChooserParams params) {
             if (filePathCallback != null) {
-                filePathCallback.onReceiveResult(null);
+                filePathCallback.onReceiveValue(null);
             }
             filePathCallback = callback;
             Intent intent = buildOpenDocumentIntent(params);
@@ -317,7 +317,7 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
                 Log.e(TAG, "no file picker available", e);
                 filePathCallback = null;
-                callback.onReceiveResult(null);
+                callback.onReceiveValue(null);
                 Toast.makeText(MainActivity.this, R.string.open_failed, Toast.LENGTH_LONG).show();
                 return false;
             }
@@ -332,7 +332,7 @@ public class MainActivity extends AppCompatActivity {
             return true;
         }
 
-        private int priorityFor(android.webkit.ConsoleMessage.Level level) {
+        private int priorityFor(android.webkit.ConsoleMessage.MessageLevel level) {
             if (level == null) {
                 return Log.INFO;
             }

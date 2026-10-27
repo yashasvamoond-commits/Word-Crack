@@ -162,9 +162,10 @@ jobs:
         run: |
           LOG="$RUNNER_TEMP/gradle.log"
           [ -f "$LOG" ] || exit 0
-          # Check-run annotations are readable through the GitHub API; emit the decisive lines.
-          grep -E "error:|FAILURE:|What went wrong|> Task .*FAILED|Caused by:|^e: |Unresolved reference|Manifest merger" "$LOG" \
-            | head -50 | while IFS= read -r line; do
+          # Check-run annotations are readable through the GitHub API; emit the decisive lines,
+          # including the "symbol:"/"location:" lines that follow each javac error.
+          grep -E -A2 "error:|FAILURE:|What went wrong|> Task .*FAILED|Caused by:|^e: |Unresolved reference|Manifest merger" "$LOG" \
+            | head -80 | while IFS= read -r line; do
               echo "::error::$line"
             done
           echo "--- last 30 log lines ---"
