@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<data-extraction-rules>
-    <cloud-backup>
-        <exclude domain="cache" path="." />
-    </cloud-backup>
-    <device-transfer>
-        <exclude domain="cache" path="." />
-    </device-transfer>
-</data-extraction-rules>
+<!--
+  Backup and transfer rules (API 31+). Default behaviour backs up the app data, including the
+  WebView profile holding WordCraft's localStorage preferences. Cache is never transferred,
+  so no explicit include/exclude rules are needed.
+-->
+<data-extraction-rules />
