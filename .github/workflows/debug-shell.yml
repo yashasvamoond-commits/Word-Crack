@@ -9,6 +9,7 @@ on:
       - arena/ff59cc86-word-crack
     paths:
       - .github/workflows/debug-shell.yml
+      - android/**
 
 permissions:
   contents: read
