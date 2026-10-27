@@ -162,14 +162,20 @@ jobs:
         run: |
           LOG="$RUNNER_TEMP/gradle.log"
           [ -f "$LOG" ] || exit 0
-          # Check-run annotations are readable through the GitHub API; emit the decisive lines,
-          # including the "symbol:"/"location:" lines that follow each javac error.
-          grep -E -A2 "error:|FAILURE:|What went wrong|> Task .*FAILED|Caused by:|^e: |Unresolved reference|Manifest merger" "$LOG" \
-            | head -80 | while IFS= read -r line; do
+          # The full failure section goes to the job summary (readable via the checks API),
+          # and the decisive one-liners also become check-run annotations.
+          {
+            echo "## Gradle build failure"
+            echo '```'
+            sed -n '/FAILURE: Build failed/,$p' "$LOG" | head -220
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E "Duplicate class|Duplicate resources|error:|Caused by:" "$LOG" \
+            | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
-          echo "--- last 30 log lines ---"
-          tail -n 30 "$LOG"
+          echo "--- last 20 log lines ---"
+          tail -n 20 "$LOG"
 
       - name: Validate APK contents
         working-directory: android
