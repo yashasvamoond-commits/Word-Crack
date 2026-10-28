@@ -1,0 +1,258 @@
+name: Build Android APK
+
+# Builds storytold/wordcraft's WASM web app with the same toolchain as the upstream release,
+# wraps it in the Android WebView project under android/, and publishes a signed, installable
+# APK to the rolling "android-latest" GitHub Release (a permanent, click-to-install link).
+
+on:
+  push:
+    branches:
+      - arena/ff59cc86-word-crack
+      - main
+    paths:
+      - android/**
+      - .github/workflows/android-apk.yml
+  pull_request:
+    paths:
+      - android/**
+      - .github/workflows/android-apk.yml
+  workflow_dispatch:
+    inputs:
+      wordcraft_ref:
+        description: "storytold/wordcraft ref to build (branch, tag, or 40-char SHA)"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pins mirroring storytold/craft-common-actions release.yml (checked 2026-10-27).
+  TRUNK_VERSION: "0.21.14"
+  TRUNK_SHA256: "f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b"
+  CRAFT_FONTS_REF: "b076417b5880bd4154bd22f00695b1d28c6bea83"
+
+jobs:
+  build:
+    name: Build WordCraft APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+
+      - name: Resolve WordCraft ref
+        id: ref
+        run: |
+          REF="${{ github.event.inputs.wordcraft_ref || 'main' }}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "Building storytold/wordcraft @ $REF"
+
+      - name: Check out storytold/wordcraft
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/wordcraft
+          ref: ${{ steps.ref.outputs.ref }}
+          path: upstream
+          persist-credentials: false
+
+      - name: Check out craft-fonts (embedded web fonts)
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-fonts
+          ref: ${{ env.CRAFT_FONTS_REF }}
+          path: upstream/craft-fonts
+          persist-credentials: false
+
+      - name: Read craft-i18n pin
+        run: |
+          REV="$(tr -d '[:space:]' < upstream/craft-i18n.rev)"
+          echo "craft-i18n rev: $REV"
+          echo "i18n_rev=$REV" >> "$GITHUB_ENV"
+
+      - name: Check out craft-i18n (interface translations)
+        uses: actions/checkout@v4
+        with:
+          repository: storytold/craft-i18n
+          ref: ${{ env.i18n_rev }}
+          path: upstream/craft-i18n
+          persist-credentials: false
+
+      - name: Install Rust toolchain (wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "upstream"
+          key: wordcraft-android-web
+
+      - name: Install Trunk
+        run: |
+          curl --proto '=https' --proto-redir =https -fsSL -o "$RUNNER_TEMP/trunk.tar.gz" \
+            "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          echo "$TRUNK_SHA256  $RUNNER_TEMP/trunk.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.cargo/bin"
+          tar -xzf "$RUNNER_TEMP/trunk.tar.gz" -C "$HOME/.cargo/bin" trunk
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          trunk --version
+
+      - name: Build WordCraft for the web (Trunk, release)
+        working-directory: upstream
+        env:
+          CARGO_INCREMENTAL: "0"
+          CARGO_NET_RETRY: "10"
+          RUST_BACKTRACE: "1"
+          CRAFT_FONTS_DIR: "${{ github.workspace }}/upstream/craft-fonts"
+          CRAFT_FONTS_REQUIRED: "1"
+          CRAFT_I18N_DIR: "${{ github.workspace }}/upstream/craft-i18n"
+          CRAFT_I18N_REQUIRED: "1"
+        run: |
+          export WORDCRAFT_BUILD_SHA="$(git rev-parse --short=12 HEAD)"
+          echo "WORDCRAFT_BUILD_SHA=$WORDCRAFT_BUILD_SHA"
+          cd apps/wordcraft-web
+          trunk build --release
+
+      - name: Resolve packaged version and commit
+        id: meta
+        run: |
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' upstream/Cargo.toml | head -1)"
+          SHA="$(git -C upstream rev-parse --short=12 HEAD)"
+          if [[ -z "$VERSION" ]]; then echo "could not read workspace version" >&2; exit 1; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "WordCraft $VERSION @ $SHA"
+
+      - name: Stage web assets into the Android project
+        run: android/ci/copy_web_assets.sh upstream/dist/web
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0"
+
+      - name: Build release APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          set +e
+          ./gradlew assembleRelease --no-daemon --console=plain --stacktrace \
+            -PwordcraftVersionName="${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.sha }}" \
+            -PciRunNumber="${{ github.run_number }}" \
+            -PwordcraftCommit="${{ steps.meta.outputs.sha }}" 2>&1 | tee "$RUNNER_TEMP/gradle.log"
+          status=${PIPESTATUS[0]}
+          echo "gradle_exit=$status" >> "$GITHUB_ENV"
+          exit "$status"
+
+      - name: Surface Gradle failure in annotations
+        if: failure()
+        run: |
+          LOG="$RUNNER_TEMP/gradle.log"
+          [ -f "$LOG" ] || exit 0
+          # The full failure section goes to the job summary (readable via the checks API),
+          # and the decisive one-liners also become check-run annotations.
+          {
+            echo "## Gradle build failure"
+            echo '```'
+            sed -n '/FAILURE: Build failed/,$p' "$LOG" | head -220
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E "Duplicate class|Duplicate resources|error:|Caused by:" "$LOG" \
+            | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          echo "--- last 20 log lines ---"
+          tail -n 20 "$LOG"
+
+      - name: Validate APK contents
+        working-directory: android
+        run: |
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" \
+            | grep -E "package:|launchable-activity:|sdkVersion:|targetSdkVersion:"
+          unzip -l "$APK" | grep -E "assets/host.html|assets/web-bridge.js|assets/web/index.html|assets/web/.*\.wasm"
+
+      - name: Rename APK (stable and versioned names)
+        run: |
+          mkdir -p apk-dist
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          cp "$APK" "apk-dist/WordCraft-android.apk"
+          cp "$APK" "apk-dist/WordCraft-${{ steps.meta.outputs.version }}-android.apk"
+          ls -lh apk-dist/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordcraft-android-apk
+          path: apk-dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Write release notes
+        if: github.event_name != 'pull_request'
+        run: |
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "# WordCraft for Android — latest build"
+            echo
+            echo "A standalone Android package of [storytold/wordcraft](https://github.com/storytold/wordcraft),"
+            echo "the open-source, clean-room reimplementation of Microsoft Word in pure Rust. The APK wraps"
+            echo "the project's official WebAssembly build in a native WebView shell. All processing happens"
+            echo "on the device."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| WordCraft version | \`${{ steps.meta.outputs.version }}\` |"
+            echo "| Upstream commit | [\`${{ steps.meta.outputs.sha }}\`](https://github.com/storytold/wordcraft/commit/${{ steps.meta.outputs.sha }}) |"
+            echo "| Built from ref | \`${{ steps.ref.outputs.ref }}\` |"
+            echo "| Minimum Android | Android 8.0 (API 26) |"
+            echo "| Architecture | universal (no native code) |"
+            echo
+            echo "## Install"
+            echo
+            echo "1. Download **WordCraft-android.apk** below — the same permanent link always serves"
+            echo "   the newest build: [WordCraft-android.apk](https://github.com/${{ github.repository }}/releases/download/android-latest/WordCraft-android.apk)."
+            echo "2. Open it from the notification or your Downloads folder."
+            echo "3. Allow installing from this source when Android prompts you."
+            echo
+            echo "Documents you save land in \`Downloads/WordCraft\`. Use the app's Open menu to edit"
+            echo ".docx/.odt/.rtf files; Print opens the generated PDF in your system viewer, which offers"
+            echo "Android's print dialog."
+            echo
+            echo "_Debug-signed for sideloading; each successful build replaces this asset._"
+          } > "$NOTES"
+          cat "$NOTES"
+
+      - name: Publish rolling release (one-click install link)
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          if gh release view android-latest >/dev/null 2>&1; then
+            gh release upload android-latest apk-dist/*.apk --clobber
+            gh release edit android-latest \
+              --title "WordCraft for Android (latest build)" \
+              --notes-file "$NOTES" \
+              --target "${{ github.sha }}"
+          else
+            gh release create android-latest apk-dist/*.apk \
+              --title "WordCraft for Android (latest build)" \
+              --notes-file "$NOTES" \
+              --target "${{ github.sha }}"
+          fi
+          echo "Published: https://github.com/${{ github.repository }}/releases/download/android-latest/WordCraft-android.apk"

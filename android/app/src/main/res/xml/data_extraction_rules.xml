@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Backup and transfer rules (API 31+). Default behaviour backs up the app data, including the
+  WebView profile holding WordCraft's localStorage preferences. Cache is never transferred,
+  so no explicit include/exclude rules are needed.
+-->
+<data-extraction-rules />
