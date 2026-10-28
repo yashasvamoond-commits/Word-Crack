@@ -159,6 +159,11 @@ class BlobBridge {
         mainHandler.post(() -> Toast.makeText(appContext, clipped, Toast.LENGTH_LONG).show());
     }
 
+    // Session memory of where each document name was written, so a repeated Save updates the
+    // same file instead of producing "letter (1).docx", "letter (2).docx" copies.
+    private final Map<String, Uri> savedMediaStoreItems = new HashMap<>();
+    private final Map<String, File> savedFiles = new HashMap<>();
+
     private void publishDownload(Transfer transfer) {
         // MediaStore Downloads is preferred (API 29+). On any failure, or on API 26-28 without
         // the storage permission, fall back to app-specific storage rather than losing the file.
@@ -207,16 +212,7 @@ class BlobBridge {
         File directory = new File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
                 "WordCraft");
-        if (!directory.exists() && !directory.mkdirs()) {
-            return null;
-        }
-        File target = uniqueFile(new File(directory, transfer.name));
-        try (FileOutputStream out = new FileOutputStream(target)) {
-            copy(transfer.file, out);
-            return target;
-        } catch (IOException e) {
-            return null;
-        }
+        return writeIntoDirectory(directory, transfer);
     }
 
     /** Fallback writer into app-specific external (or internal) storage, always permitted. */
@@ -225,20 +221,39 @@ class BlobBridge {
         if (base == null) {
             base = new File(appContext.getFilesDir(), Environment.DIRECTORY_DOWNLOADS);
         }
-        File directory = new File(base, "WordCraft");
+        return writeIntoDirectory(new File(base, "WordCraft"), transfer);
+    }
+
+    /**
+     * Writes the transfer into {@code directory}, reusing a file this session already created
+     * under the same name (a plain Save) and otherwise picking a non-clashing name (a Save As).
+     */
+    private File writeIntoDirectory(File directory, Transfer transfer) {
         if (!directory.exists() && !directory.mkdirs()) {
             return null;
         }
-        File target = uniqueFile(new File(directory, transfer.name));
+        File existing = savedFiles.get(transfer.name);
+        File target = (existing != null && existing.exists())
+                ? existing
+                : uniqueFile(new File(directory, transfer.name));
         try (FileOutputStream out = new FileOutputStream(target)) {
             copy(transfer.file, out);
+            savedFiles.put(transfer.name, target);
             return target;
         } catch (IOException e) {
+            savedFiles.remove(transfer.name);
             return null;
         }
     }
 
     private boolean publishViaMediaStore(Transfer transfer) {
+        // A Save of a document already published this session overwrites its MediaStore item.
+        Uri existing = savedMediaStoreItems.get(transfer.name);
+        if (existing != null && overwriteMediaStoreItem(existing, transfer)) {
+            return true;
+        }
+        savedMediaStoreItems.remove(transfer.name);
+
         ContentValues values = new ContentValues();
         values.put(MediaStore.Downloads.DISPLAY_NAME, transfer.name);
         values.put(MediaStore.Downloads.MIME_TYPE, transfer.mime);
@@ -262,7 +277,21 @@ class BlobBridge {
         values.clear();
         values.put(MediaStore.Downloads.IS_PENDING, 0);
         appContext.getContentResolver().update(item, values, null, null);
+        savedMediaStoreItems.put(transfer.name, item);
         return true;
+    }
+
+    /** Overwrites a previously created MediaStore item; false if it vanished or is unwritable. */
+    private boolean overwriteMediaStoreItem(Uri item, Transfer transfer) {
+        try (OutputStream out = appContext.getContentResolver().openOutputStream(item, "w")) {
+            if (out == null) {
+                return false;
+            }
+            copy(transfer.file, out);
+            return true;
+        } catch (IOException | SecurityException e) {
+            return false;
+        }
     }
 
     private void openExternal(Transfer transfer) {

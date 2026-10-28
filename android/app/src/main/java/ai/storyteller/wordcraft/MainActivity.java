@@ -54,15 +54,15 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "WordCraft";
 
     /**
-     * The bundled site is served from {@code assets/web} through {@link WebViewAssetLoader} on a
-     * virtual HTTPS origin. A real origin keeps ES-module loading, {@code fetch()} and blob URLs
-     * working exactly like a hosted page (a plain file:// URL breaks module CORS in WebView).
+     * The host frame at {@code assets/host.html} frames the WordCraft page with
+     * {@code ?host=parent} on the same virtual HTTPS origin and runs its postMessage host
+     * protocol (open/save), implemented by the injected web-bridge.js.
      */
     private static final String START_URL =
-            "https://appassets.androidplatform.net/assets/web/index.html";
+            "https://appassets.androidplatform.net/assets/host.html";
     private static final String BRIDGE_SCRIPT = "web-bridge.js";
 
-    private WebView webView;
+    private KeyboardWebView webView;
     private WebViewAssetLoader assetLoader;
     private BlobBridge bridge;
     private String bridgeScript;
@@ -121,7 +121,7 @@ public class MainActivity extends AppCompatActivity {
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
                 .build();
 
-        webView = new WebView(this);
+        webView = new KeyboardWebView(this);
         setContentView(webView);
 
         WebSettings settings = webView.getSettings();
@@ -141,13 +141,9 @@ public class MainActivity extends AppCompatActivity {
         webView.setWebViewClient(new WordCraftWebViewClient());
         webView.setWebChromeClient(new WordCraftChromeClient());
         webView.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
-            // Blob URLs are intercepted in web-bridge.js before they reach here; this only
-            // handles ordinary http(s) downloads, if any ever appear.
-            if (url != null && url.startsWith("blob:")) {
-                String name = URLUtil.guessFileName(url, contentDisposition, mimeType);
-                webView.evaluateJavascript(
-                        "window.__wordcraftSaveBlob && window.__wordcraftSaveBlob("
-                                + jsString(name) + "," + jsString(url) + ");", null);
+            // In host mode WordCraft routes every save/export through wordcraft:save, so only an
+            // ordinary http(s) download can ever reach this listener.
+            if (url == null || url.startsWith("blob:") || url.startsWith("file:")) {
                 return;
             }
             enqueueSystemDownload(url, contentDisposition, mimeType);
@@ -200,6 +196,7 @@ public class MainActivity extends AppCompatActivity {
             filePathCallback = null;
         }
         if (webView != null) {
+            webView.hideSoftKeyboard();
             webView.destroy();
             webView = null;
         }
@@ -292,10 +289,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             throw new IllegalStateException("missing bundled asset " + name, e);
         }
-    }
-
-    private static String jsString(String value) {
-        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
     private final class WordCraftWebViewClient extends WebViewClient {

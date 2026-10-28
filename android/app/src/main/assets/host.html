@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>WordCraft</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #e6e6e6;
+    }
+    #app {
+      border: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #555;
+      font: 14px system-ui, sans-serif;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <!--
+    Same-origin parent frame for WordCraft's host bridge (?host=parent). The injected
+    web-bridge.js acts as the host: it sends wordcraft:open with the document launched from an
+    Android VIEW intent and stores every wordcraft:save through the AndroidBridge interface.
+  -->
+  <iframe
+    id="app"
+    src="web/index.html?host=parent"
+    allow="clipboard-read; clipboard-write; fullscreen">
+  </iframe>
+  <div id="loading">Loading WordCraft&hellip;</div>
+</body>
+</html>

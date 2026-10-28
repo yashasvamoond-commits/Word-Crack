@@ -184,7 +184,7 @@ jobs:
           test -f "$APK"
           "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" \
             | grep -E "package:|launchable-activity:|sdkVersion:|targetSdkVersion:"
-          unzip -l "$APK" | grep -E "assets/web/index.html|assets/web/.*\.wasm|assets/web-bridge.js"
+          unzip -l "$APK" | grep -E "assets/host.html|assets/web-bridge.js|assets/web/index.html|assets/web/.*\.wasm"
 
       - name: Rename APK (stable and versioned names)
         run: |
