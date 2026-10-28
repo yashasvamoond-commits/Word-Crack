@@ -165,7 +165,11 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        if (savedInstanceState != null) {
+        boolean hasViewIntent = getIntent() != null
+                && Intent.ACTION_VIEW.equals(getIntent().getAction());
+        // A shared document needs a fresh host page so the wordcraft:open flow runs; only restore
+        // the previous session when the activity is recreated without a new document to open.
+        if (savedInstanceState != null && !hasViewIntent) {
             webView.restoreState(savedInstanceState);
         } else {
             webView.loadUrl(START_URL);
@@ -177,7 +181,7 @@ public class MainActivity extends AppCompatActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         if (Intent.ACTION_VIEW.equals(intent.getAction()) && intent.getData() != null) {
-            // Rebuild the page so the freshly queued file reaches the app's first picker click.
+            // Stage the document and rebuild the host page; it posts wordcraft:open after ready.
             queueViewIntent(intent);
             webView.loadUrl(START_URL);
         }
