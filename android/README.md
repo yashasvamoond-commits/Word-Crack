@@ -28,18 +28,29 @@ storytold/wordcraft (git ref, pinned in CI)
 * **WebViewAssetLoader** serves the static site over the virtual HTTPS origin
   `https://appassets.androidplatform.net/assets/web/`, so ES modules, `fetch()` and `blob:` URLs
   behave exactly like a hosted page (a plain `file://` origin breaks module CORS in WebView).
-* **web-bridge.js** is injected on every page load and adapts three browser mechanisms:
-  * **Save / Export** — the app clicks a hidden `<a download>` pointing at a `blob:` URL. The
-    click is intercepted and the blob is streamed to Java in 256 KiB chunks, then written to
-    `Downloads/WordCraft` via MediaStore (API 29+) or a public-directory write (API 26–28).
+* **web-bridge.js** is injected on every page load and adapts the browser mechanisms that
+  Android WebView implements differently or not at all:
+  * **Save / Export** — recent WebViews expose `window.showSaveFilePicker`, but its promise never
+    settles because WebView has no File System Access UI; WordCraft would await it forever and
+    never reach its fallback. The bridge shadows the API with `undefined` before any app script
+    runs, so WordCraft takes its hidden `<a download>` + `blob:` URL path. Both the click event
+    and `HTMLAnchorElement.prototype.click()` are intercepted, and the blob is streamed to Java
+    in 256 KiB chunks. Writes go to `Downloads/WordCraft` via MediaStore (API 29+), a public
+    directory write on API 26–28 (runtime permission requested automatically), or app-specific
+    storage as a last-resort fallback — the toast names the final location.
   * **Print** — the app opens a generated PDF in a hidden iframe and calls `print()` on it.
     WebView has no print support, so the same PDF blob is handed to the system PDF viewer through
     a FileProvider `ACTION_VIEW` intent; the viewer offers Android's print dialog.
   * **Open from other apps** — a document launched with an `ACTION_VIEW` intent is staged
     natively, pulled back into the page as a `File`, and fed to the app's own
     `<input type="file">` picker instead of showing a second picker.
-* **Open / Insert picture / Add fonts** inside the app use the normal WebView file chooser,
-  mapped to `ACTION_OPEN_DOCUMENT` (single and multi-select) in `MainActivity`.
+  * **Error visibility** — page errors and unhandled promise rejections are forwarded to a
+    `logError` JavascriptInterface method that writes logcat and shows a rate-limited toast.
+* **Open / Insert picture / Add fonts** inside the app use the normal WebView file chooser.
+  `MainActivity` launches WebView's own `FileChooserParams.createIntent()` (correct accept types,
+  multi-select and File System Access modes for the installed WebView version), falling back to
+  `ACTION_GET_CONTENT` on tablets or custom ROMs without a DocumentsUI provider, and reports a
+  clear toast if no picker app exists at all.
 * Preferences the app stores in `localStorage` persist in the app's WebView data directory and
   are included in Android backups.
 

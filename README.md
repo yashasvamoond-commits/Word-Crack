@@ -29,8 +29,11 @@ commit.
 
 - Full WordCraft editor: `.docx`, `.odt`, `.rtf`, `.txt`, `.md`, `.html` and more — all processing
   is local on the device.
-- **Open / Insert picture / Add fonts** through the Android system document picker.
-- **Save / Export** writes files to `Downloads/WordCraft`.
+- **Open / Insert picture / Add fonts** through the Android system document picker (with a
+  `GET_CONTENT` fallback for devices without a DocumentsUI provider).
+- **Save / Export** writes files to `Downloads/WordCraft` — the WebView's broken, never-settling
+  `showSaveFilePicker` is neutralized so the app's anchor-download path runs, with app-specific
+  storage as an automatic fallback and a toast showing the final location.
 - **Print** hands the generated PDF to the system viewer, which offers Android's print dialog.
 - Documents can also be opened directly from file managers (the app registers the relevant
   `VIEW` intent filters).
