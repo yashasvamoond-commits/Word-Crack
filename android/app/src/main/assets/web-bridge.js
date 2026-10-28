@@ -2,17 +2,19 @@
  * WordCraft Android WebView bridge.
  *
  * Injected on every page load by MainActivity. The WordCraft web app is an unchanged WASM build
- * designed for a desktop browser, so this script adapts three browser mechanisms to Android:
+ * designed for a desktop browser, so this script adapts browser mechanisms to Android:
  *
- *   1. Save/Export  - the app creates a temporary <a download> pointing at a blob: URL and clicks
- *                     it. WebView does not turn that into a download, so we intercept the click
- *                     and stream the blob to AndroidBridge, which writes Downloads/WordCraft.
+ *   1. Save/Export  - recent Android WebViews expose window.showSaveFilePicker, but its promise
+ *                     never settles (no File System Access UI), which would hang WordCraft's save
+ *                     forever. We shadow it with undefined so the app takes its anchor-download
+ *                     fallback, intercept the hidden <a download> click, and stream the blob to
+ *                     AndroidBridge in 256 KiB chunks for Downloads/WordCraft.
  *   2. Print        - the app loads a PDF in a hidden iframe and calls print() on it. WebView has
- *                     no print support, so we hand the same PDF blob to AndroidBridge for an
- *                     external VIEW intent (the system PDF viewer offers Print itself).
- *   3. Open-in-app  - documents launched with a VIEW intent are staged natively; we reconstruct
- *                     them as a File and feed the app's next <input type=file>.click() instead
- *                     of opening the system picker.
+ *                     no print support, so the same PDF blob is handed to the system PDF viewer
+ *                     through a FileProvider VIEW intent (the viewer offers Android's print).
+ *   3. Open-in-app  - documents launched with a VIEW intent are staged natively, reconstructed as
+ *                     a File and fed to the app's next <input type=file>.click() instead of
+ *                     opening a second picker.
  *
  * All transfer chunks stay well under the Binder transaction size limit (256 KiB raw bytes).
  */
@@ -31,6 +33,43 @@
   var CHUNK_BYTES = 256 * 1024;
   var KIND_DOWNLOAD = 0;
   var KIND_VIEW = 1;
+
+  function reportError(where, error) {
+    var detail = error && error.message ? error.message : String(error);
+    console.error('WordCraft ' + where + ' failed:', error);
+    try {
+      bridge.logError(where + ': ' + detail);
+    } catch (ignored) {
+      // The native interface is unavailable; the console entry is all we have.
+    }
+  }
+
+  // ------------------------------------------------------------------ save picker shadow
+
+  // WordCraft feature-detects showSaveFilePicker and prefers it. On Android WebView the function
+  // exists (recent versions) but the returned promise never resolves or rejects, leaving the save
+  // ticket open forever. Shadow it so the app's own anchor-download fallback runs instead.
+  function shadowBrokenSavePicker() {
+    try {
+      Object.defineProperty(window, 'showSaveFilePicker', {
+        value: undefined,
+        configurable: true,
+        writable: true
+      });
+    } catch (error) {
+      try {
+        window.showSaveFilePicker = undefined;
+      } catch (ignored) {
+        reportError('save-picker-shadow', error);
+      }
+    }
+  }
+
+  // Run immediately: the WASM module only checks the property on a Save tap, but defining it
+  // before any page script runs leaves no window where the broken API is visible.
+  shadowBrokenSavePicker();
+
+  // ------------------------------------------------------------------ blob -> native
 
   // Fetches a blob: URL and streams it to the native side.
   function sendBlob(name, blobUrl, kind) {
@@ -78,12 +117,13 @@
   window.__wordcraftSaveBlob = function (name, blobUrl) {
     return sendBlob(name || 'wordcraft-file', blobUrl, KIND_DOWNLOAD)
       .catch(function (error) {
-        console.error('WordCraft save failed', error);
+        reportError('save', error);
       });
   };
 
   function installAnchorInterceptor() {
-    // Capture phase: run before the click reaches the anchor itself.
+    // Capture phase: run before the click reaches the anchor itself. WordCraft (and rfd's save
+    // dialog) build <a download href="blob:..."> nodes and call .click() on them.
     document.addEventListener('click', function (event) {
       var anchor = event.target && event.target.closest
         ? event.target.closest('a[download]')
@@ -96,7 +136,7 @@
       var url = anchor.href;
       var name = anchor.download || 'wordcraft-file';
       sendBlob(name, url, KIND_DOWNLOAD).catch(function (error) {
-        console.error('WordCraft save failed', error);
+        reportError('save', error);
       });
       // The app revokes itself after 10 s; keep the URL alive until our fetch is done plus margin.
       setTimeout(function () {
@@ -107,6 +147,21 @@
         }
       }, 60000);
     }, true);
+
+    // Second safety net: clicks dispatched programmatically still produce DOM events above, but
+    // some overlay libraries call preventDefault themselves. Intercept the method directly too.
+    var originalAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.href && this.href.indexOf('blob:') === 0 && this.hasAttribute('download')) {
+        var url = this.href;
+        var name = this.download || 'wordcraft-file';
+        sendBlob(name, url, KIND_DOWNLOAD).catch(function (error) {
+          reportError('save', error);
+        });
+        return;
+      }
+      return originalAnchorClick.apply(this, arguments);
+    };
   }
 
   function installPrintObserver() {
@@ -133,7 +188,7 @@
           }
           handled[node.src] = true;
           sendBlob('wordcraft-print.pdf', node.src, KIND_VIEW).catch(function (error) {
-            console.error('WordCraft print failed', error);
+            reportError('print', error);
           });
         });
       });
@@ -166,7 +221,13 @@
     }
 
     function consumePendingFile(infoJson) {
-      var info = JSON.parse(infoJson);
+      var info;
+      try {
+        info = JSON.parse(infoJson);
+      } catch (error) {
+        reportError('shared-document', error);
+        return;
+      }
       var parts = [];
       var offset = 0;
 
@@ -193,7 +254,7 @@
         window.__wordcraftPendingFile = file;
         bridge.clearPendingFile();
       }).catch(function (error) {
-        console.error('WordCraft: could not read the shared document', error);
+        reportError('shared-document', error);
       });
     }
 
@@ -211,7 +272,7 @@
           this.dispatchEvent(new Event('change', { bubbles: true }));
           return;
         } catch (error) {
-          console.error('WordCraft: pending file injection failed', error);
+          reportError('shared-document', error);
         }
       }
       return originalClick.apply(this, arguments);
@@ -220,10 +281,25 @@
     poll();
   }
 
+  function installErrorForwarding() {
+    window.addEventListener('error', function (event) {
+      reportError('page', event.message || ('error at ' + event.filename + ':' + event.lineno));
+    });
+    window.addEventListener('unhandledrejection', function (event) {
+      var reason = event.reason && (event.reason.message || event.reason.name) || event.reason;
+      reportError('promise', reason || 'unhandled rejection');
+    });
+  }
+
   function install() {
-    installAnchorInterceptor();
-    installPrintObserver();
-    installPendingFile();
+    try {
+      installAnchorInterceptor();
+      installPrintObserver();
+      installPendingFile();
+      installErrorForwarding();
+    } catch (error) {
+      reportError('bridge-install', error);
+    }
   }
 
   if (document.documentElement) {

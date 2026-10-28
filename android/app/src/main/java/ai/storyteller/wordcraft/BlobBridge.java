@@ -11,6 +11,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.widget.Toast;
@@ -58,6 +59,10 @@ class BlobBridge {
     private final Context appContext;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Map<String, Transfer> transfers = new HashMap<>();
+
+    // Rate limit for error toasts so a repeating JS error cannot spam the screen.
+    private String lastErrorText;
+    private long lastErrorAt;
 
     private File pendingFile;
     private String pendingName;
@@ -137,19 +142,100 @@ class BlobBridge {
         transfer.file.delete();
     }
 
+    /** Errors forwarded from web-bridge.js: logcat plus a rate-limited toast for the user. */
+    @JavascriptInterface
+    public synchronized void logError(String message) {
+        if (message == null || message.isEmpty()) {
+            return;
+        }
+        Log.e("WordCraft", "web: " + message);
+        long now = System.currentTimeMillis();
+        if (message.equals(lastErrorText) && now - lastErrorAt < 5_000) {
+            return;
+        }
+        lastErrorText = message;
+        lastErrorAt = now;
+        String clipped = message.length() > 180 ? message.substring(0, 180) + "…" : message;
+        mainHandler.post(() -> Toast.makeText(appContext, clipped, Toast.LENGTH_LONG).show());
+    }
+
     private void publishDownload(Transfer transfer) {
-        boolean published;
+        // MediaStore Downloads is preferred (API 29+). On any failure, or on API 26-28 without
+        // the storage permission, fall back to app-specific storage rather than losing the file.
+        String location = null;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            published = publishViaMediaStore(transfer);
-        } else {
-            published = publishLegacy(transfer);
+            if (publishViaMediaStore(transfer)) {
+                location = "Downloads/WordCraft";
+            }
+        } else if (hasStoragePermission()) {
+            File written = publishToPublicDownloads(transfer);
+            if (written != null) {
+                location = "Downloads/WordCraft";
+            }
+        }
+        if (location == null) {
+            File written = publishToAppStorage(transfer);
+            if (written != null) {
+                location = written.getAbsolutePath();
+            }
         }
         //noinspection ResultOfMethodCallIgnored
         transfer.file.delete();
-        final String message = published
-                ? appContext.getString(R.string.saved_to_downloads, transfer.name)
-                : appContext.getString(R.string.save_failed);
-        mainHandler.post(() -> Toast.makeText(appContext, message, Toast.LENGTH_LONG).show());
+        final String message;
+        if (location != null) {
+            if ("Downloads/WordCraft".equals(location)) {
+                message = appContext.getString(R.string.saved_to_downloads, transfer.name);
+            } else {
+                message = appContext.getString(R.string.saved_to_folder, transfer.name, location);
+            }
+        } else {
+            message = appContext.getString(R.string.save_failed);
+        }
+        final String finalMessage = message;
+        mainHandler.post(() -> Toast.makeText(appContext, finalMessage, Toast.LENGTH_LONG).show());
+    }
+
+    private boolean hasStoragePermission() {
+        return ContextCompat.checkSelfPermission(
+                appContext, android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** API 26-28 only: a direct write into the shared Downloads folder (needs the permission). */
+    @SuppressWarnings("deprecation")
+    private File publishToPublicDownloads(Transfer transfer) {
+        File directory = new File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "WordCraft");
+        if (!directory.exists() && !directory.mkdirs()) {
+            return null;
+        }
+        File target = uniqueFile(new File(directory, transfer.name));
+        try (FileOutputStream out = new FileOutputStream(target)) {
+            copy(transfer.file, out);
+            return target;
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /** Fallback writer into app-specific external (or internal) storage, always permitted. */
+    private File publishToAppStorage(Transfer transfer) {
+        File base = appContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (base == null) {
+            base = new File(appContext.getFilesDir(), Environment.DIRECTORY_DOWNLOADS);
+        }
+        File directory = new File(base, "WordCraft");
+        if (!directory.exists() && !directory.mkdirs()) {
+            return null;
+        }
+        File target = uniqueFile(new File(directory, transfer.name));
+        try (FileOutputStream out = new FileOutputStream(target)) {
+            copy(transfer.file, out);
+            return target;
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     private boolean publishViaMediaStore(Transfer transfer) {
@@ -177,34 +263,6 @@ class BlobBridge {
         values.put(MediaStore.Downloads.IS_PENDING, 0);
         appContext.getContentResolver().update(item, values, null, null);
         return true;
-    }
-
-    @SuppressWarnings("deprecation")
-    private boolean publishLegacy(Transfer transfer) {
-        // API 26-28: a plain File write into the public Downloads folder needs the storage
-        // permission. Without it, fall back to the app-specific external folder, which always
-        // works and is visible through the Files app under Android/data.
-        File targetDir;
-        if (ContextCompat.checkSelfPermission(appContext, android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                == PackageManager.PERMISSION_GRANTED) {
-            targetDir = new File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                    "WordCraft");
-        } else {
-            File external = appContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-            // External storage can be unavailable; fall back to internal storage.
-            targetDir = new File(external != null ? external : appContext.getFilesDir(), "WordCraft");
-        }
-        if (!targetDir.exists() && !targetDir.mkdirs()) {
-            return false;
-        }
-        File target = uniqueFile(new File(targetDir, transfer.name));
-        try (FileOutputStream out = new FileOutputStream(target)) {
-            copy(transfer.file, out);
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
     }
 
     private void openExternal(Transfer transfer) {

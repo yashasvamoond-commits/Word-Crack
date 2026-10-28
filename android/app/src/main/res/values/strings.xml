@@ -2,6 +2,8 @@
 <resources>
     <string name="app_name">WordCraft</string>
     <string name="saved_to_downloads">Saved %1$s to Downloads/WordCraft</string>
+    <string name="saved_to_folder">Saved %1$s to %2$s</string>
     <string name="save_failed">Couldn\'t save the file</string>
     <string name="open_failed">No app available to open this file</string>
+    <string name="no_file_picker">No app available to pick a file</string>
 </resources>

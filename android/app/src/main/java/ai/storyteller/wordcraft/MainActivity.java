@@ -26,6 +26,7 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 import androidx.webkit.WebViewAssetLoader;
 
 import java.io.File;
@@ -66,6 +67,11 @@ public class MainActivity extends AppCompatActivity {
     private BlobBridge bridge;
     private String bridgeScript;
     private ValueCallback<Uri[]> filePathCallback;
+
+    // Android 8.0/8.1 only: grants the shared-Downloads write used by the legacy save path.
+    private final ActivityResultLauncher<String> storagePermission =
+            registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted ->
+                    Log.i(TAG, "WRITE_EXTERNAL_STORAGE granted=" + granted));
 
     private final ActivityResultLauncher<Intent> documentPicker =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
@@ -124,7 +130,9 @@ public class MainActivity extends AppCompatActivity {
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setAllowFileAccess(false);
+        // Some older file managers return file:// URIs from the picker; allow reading those even
+        // though the app itself only loads the virtual HTTPS origin below.
+        settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
@@ -146,6 +154,8 @@ public class MainActivity extends AppCompatActivity {
         });
         webView.addJavascriptInterface(bridge, "AndroidBridge");
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
+
+        requestLegacyStoragePermission();
 
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
@@ -185,11 +195,25 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        if (filePathCallback != null) {
+            filePathCallback.onReceiveValue(null);
+            filePathCallback = null;
+        }
         if (webView != null) {
             webView.destroy();
             webView = null;
         }
         super.onDestroy();
+    }
+
+    private void requestLegacyStoragePermission() {
+        // MediaStore needs no permission on API 29+; only the API 26-28 public-folder write does.
+        if (android.os.Build.VERSION.SDK_INT <= android.os.Build.VERSION_CODES.P
+                && ContextCompat.checkSelfPermission(this,
+                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            storagePermission.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
     }
 
     private void queueViewIntent(Intent intent) {
@@ -311,14 +335,20 @@ public class MainActivity extends AppCompatActivity {
                 filePathCallback.onReceiveValue(null);
             }
             filePathCallback = callback;
-            Intent intent = buildOpenDocumentIntent(params);
+            Intent intent = buildChooserIntent(params);
+            if (intent == null) {
+                filePathCallback = null;
+                callback.onReceiveValue(null);
+                Toast.makeText(MainActivity.this, R.string.no_file_picker, Toast.LENGTH_LONG).show();
+                return false;
+            }
             try {
                 documentPicker.launch(intent);
             } catch (Exception e) {
                 Log.e(TAG, "no file picker available", e);
                 filePathCallback = null;
                 callback.onReceiveValue(null);
-                Toast.makeText(MainActivity.this, R.string.open_failed, Toast.LENGTH_LONG).show();
+                Toast.makeText(MainActivity.this, R.string.no_file_picker, Toast.LENGTH_LONG).show();
                 return false;
             }
             return true;
@@ -344,16 +374,55 @@ public class MainActivity extends AppCompatActivity {
             };
         }
 
-        private Intent buildOpenDocumentIntent(FileChooserParams params) {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-            if (params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
-                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        /**
+         * Builds the safest available picker intent. WebView's own
+         * {@link FileChooserParams#createIntent()} already encodes the accept types, the
+         * single/multiple mode and the File System Access permission mode for the platform's
+         * WebView version. Devices without a DocumentsUI provider (some tablets and custom ROMs)
+         * get an ACTION_GET_CONTENT fallback, which a much wider range of apps can handle.
+         */
+        private Intent buildChooserIntent(FileChooserParams params) {
+            Intent primary = null;
+            try {
+                primary = params.createIntent();
+                primary.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                if (Intent.ACTION_OPEN_DOCUMENT.equals(primary.getAction())) {
+                    primary.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "WebView createIntent failed, using GET_CONTENT", e);
             }
+            if (primary != null && primary.resolveActivity(getPackageManager()) != null) {
+                return primary;
+            }
+
+            Intent fallback = new Intent(Intent.ACTION_GET_CONTENT);
+            fallback.addCategory(Intent.CATEGORY_OPENABLE);
+            fallback.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            if (params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                fallback.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            }
+            Set<String> mimes = acceptMimeTypes(params.getAcceptTypes());
+            if (mimes.isEmpty()) {
+                fallback.setType("*/*");
+            } else if (mimes.size() == 1) {
+                fallback.setType(mimes.iterator().next());
+            } else {
+                fallback.setType("*/*");
+                fallback.putExtra(Intent.EXTRA_MIME_TYPES, mimes.toArray(new String[0]));
+            }
+            if (fallback.resolveActivity(getPackageManager()) != null) {
+                return fallback;
+            }
+            return null;
+        }
+
+        private Set<String> acceptMimeTypes(String[] acceptTypes) {
             Set<String> mimes = new LinkedHashSet<>();
-            for (String accept : params.getAcceptTypes()) {
+            if (acceptTypes == null) {
+                return mimes;
+            }
+            for (String accept : acceptTypes) {
                 if (accept == null || accept.isEmpty()) {
                     continue;
                 }
@@ -367,15 +436,7 @@ public class MainActivity extends AppCompatActivity {
                     mimes.add(accept);
                 }
             }
-            if (mimes.isEmpty()) {
-                intent.setType("*/*");
-            } else if (mimes.size() == 1) {
-                intent.setType(mimes.iterator().next());
-            } else {
-                intent.setType("*/*");
-                intent.putExtra(Intent.EXTRA_MIME_TYPES, mimes.toArray(new String[0]));
-            }
-            return intent;
+            return mimes;
         }
     }
 }
