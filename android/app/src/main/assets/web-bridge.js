@@ -258,13 +258,21 @@
       }
       observeChildFrame();
     });
-    // In case the load event already fired before this script ran.
-    if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {
-      if (loading) {
-        loading.style.display = 'none';
+    // In case the load event already fired before this script ran, keep retrying until the
+    // same-origin child document is observable (at most ~30 s).
+    var attempts = 0;
+    var timer = setInterval(function () {
+      if (childObserved || ++attempts > 150) {
+        clearInterval(timer);
+        return;
       }
-      observeChildFrame();
-    }
+      if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {
+        if (loading) {
+          loading.style.display = 'none';
+        }
+        observeChildFrame();
+      }
+    }, 200);
   }
 
   window.addEventListener('message', function (event) {
