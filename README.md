@@ -29,14 +29,16 @@ commit.
 
 - Full WordCraft editor: `.docx`, `.odt`, `.rtf`, `.txt`, `.md`, `.html` and more — all processing
   is local on the device.
+- **Tap a document in your file manager → it opens directly in the app** through WordCraft's
+  host-bridge protocol (no home screen detour, no second picker).
 - **Open / Insert picture / Add fonts** through the Android system document picker (with a
   `GET_CONTENT` fallback for devices without a DocumentsUI provider).
-- **Save / Export** writes files to `Downloads/WordCraft` — the WebView's broken, never-settling
-  `showSaveFilePicker` is neutralized so the app's anchor-download path runs, with app-specific
-  storage as an automatic fallback and a toast showing the final location.
+- **Save / Export** writes files to `Downloads/WordCraft`, overwriting the same document on
+  repeated saves, with app-specific storage as an automatic fallback and a toast showing the
+  final location.
+- **Soft keyboard works alongside a paired Bluetooth keyboard** — the on-screen IME is forced
+  available when an editable field gains focus, and the layout resizes above it.
 - **Print** hands the generated PDF to the system viewer, which offers Android's print dialog.
-- Documents can also be opened directly from file managers (the app registers the relevant
-  `VIEW` intent filters).
 - Interface translations and embedded fonts from the upstream release are included.
 
 ## How it is built
@@ -44,8 +46,9 @@ commit.
 | Piece | Technology |
 |---|---|
 | Editor engine | `storytold/wordcraft` compiled to `wasm32-unknown-unknown` with Trunk |
-| App shell | Android WebView + `androidx.webkit` `WebViewAssetLoader` (pure Java, no Kotlin) |
-| File bridge | `JavascriptInterface` + injected `web-bridge.js` (chunked blob transport) |
+| App shell | Same-origin `host.html` framing `?host=parent` in an Android WebView + `androidx.webkit` `WebViewAssetLoader` (pure Java, no Kotlin) |
+| File bridge | WordCraft host protocol (`wordcraft:open/save` postMessage) over a `JavascriptInterface` chunked transport in `web-bridge.js` |
+| Keyboard | `KeyboardWebView` forces the soft IME even with a hardware keyboard paired |
 | Build | GitHub Actions: Rust/Trunk → Gradle AGP 8.7.3, SDK 35, min SDK 26 |
 | Distribution | Rolling GitHub Release with a stable asset name (permanent install link) |
 

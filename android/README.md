@@ -17,35 +17,44 @@ storytold/wordcraft (git ref, pinned in CI)
                                    │  android/ci/copy_web_assets.sh
                                    ▼
               app/src/main/assets/web/  (staged at build time, not committed)
-                                   │  loaded by
+                                   │  framed by
                                    ▼
-        MainActivity (WebView + androidx.webkit WebViewAssetLoader)
-                                   │  window.AndroidBridge  (JavascriptInterface)
+   assets/host.html  ── iframe (?host=parent, same virtual HTTPS origin)
+                                   │  wordcraft:ready/open/save postMessage protocol
                                    ▼
-                            BlobBridge (Java)
+        web-bridge.js (injected host page)  ── window.AndroidBridge ── BlobBridge (Java)
+                                   │
+        MainActivity (KeyboardWebView + androidx.webkit WebViewAssetLoader)
 ```
 
 * **WebViewAssetLoader** serves the static site over the virtual HTTPS origin
-  `https://appassets.androidplatform.net/assets/web/`, so ES modules, `fetch()` and `blob:` URLs
+  `https://appassets.androidplatform.net/assets/`, so ES modules, `fetch()` and `blob:` URLs
   behave exactly like a hosted page (a plain `file://` origin breaks module CORS in WebView).
-* **web-bridge.js** is injected on every page load and adapts the browser mechanisms that
-  Android WebView implements differently or not at all:
-  * **Save / Export** — recent WebViews expose `window.showSaveFilePicker`, but its promise never
-    settles because WebView has no File System Access UI; WordCraft would await it forever and
-    never reach its fallback. The bridge shadows the API with `undefined` before any app script
-    runs, so WordCraft takes its hidden `<a download>` + `blob:` URL path. Both the click event
-    and `HTMLAnchorElement.prototype.click()` are intercepted, and the blob is streamed to Java
-    in 256 KiB chunks. Writes go to `Downloads/WordCraft` via MediaStore (API 29+), a public
-    directory write on API 26–28 (runtime permission requested automatically), or app-specific
-    storage as a last-resort fallback — the toast names the final location.
-  * **Print** — the app opens a generated PDF in a hidden iframe and calls `print()` on it.
-    WebView has no print support, so the same PDF blob is handed to the system PDF viewer through
-    a FileProvider `ACTION_VIEW` intent; the viewer offers Android's print dialog.
+* **Host-mode framing** — `assets/host.html` is the app's start page. It frames
+  `web/index.html?host=parent`, which makes WordCraft run its documented host bridge
+  (`apps/wordcraft-web/src/host.rs` upstream). The injected `web-bridge.js` is that host:
   * **Open from other apps** — a document launched with an `ACTION_VIEW` intent is staged
-    natively, pulled back into the page as a `File`, and fed to the app's own
-    `<input type="file">` picker instead of showing a second picker.
+    natively (`BlobBridge`). After the child posts `wordcraft:ready`, the host pulls the bytes in
+    256 KiB chunks and posts a `wordcraft:open` message, so the document opens directly — no home
+    screen and no second picker. A late-arriving intent reloads the host and repeats the flow.
+  * **Save / Export** — every save the app would otherwise download arrives as a
+    `wordcraft:save` message whose `ArrayBuffer` is streamed to Java. Writes go to
+    `Downloads/WordCraft` via MediaStore (API 29+), a public-directory write on API 26–28
+    (runtime permission requested automatically), or app-specific storage as a last resort; the
+    toast names the final location. A repeated Save overwrites the session's same-named file
+    instead of producing `(1)`, `(2)` copies.
+  * **Print** — the app opens a generated PDF in a hidden blob: iframe inside the child. A
+    same-origin `MutationObserver` in the host catches it, fetches the blob through the child
+    realm, and hands it to the system PDF viewer via a FileProvider `ACTION_VIEW` intent; the
+    viewer offers Android's print dialog (WebView itself has no `window.print()` support).
   * **Error visibility** — page errors and unhandled promise rejections are forwarded to a
     `logError` JavascriptInterface method that writes logcat and shows a rate-limited toast.
+* **Soft keyboard with hardware keyboards** — `KeyboardWebView` overrides
+  `onCreateInputConnection`: Android normally suppresses the IME while a Bluetooth/physical
+  keyboard is paired, so it requests the soft keyboard there (`SHOW_IMPLICIT`, escalating to
+  `SHOW_FORCED` when the system gates the implicit request), and releases it again on focus loss
+  and destroy. Both keyboards then work simultaneously, like a standard Android app. The activity
+  uses `windowSoftInputMode="adjustResize"` so the editor resizes above the keyboard.
 * **Open / Insert picture / Add fonts** inside the app use the normal WebView file chooser.
   `MainActivity` launches WebView's own `FileChooserParams.createIntent()` (correct accept types,
   multi-select and File System Access modes for the installed WebView version), falling back to
@@ -63,9 +72,10 @@ on the device.
 | Path | Purpose |
 |---|---|
 | `app/` | The Android application module (pure Java + resources). |
-| `app/src/main/assets/web-bridge.js` | Injected WebView adaptation layer. |
+| `app/src/main/assets/host.html` | Top frame that hosts `web/index.html?host=parent`. |
+| `app/src/main/assets/web-bridge.js` | Injected host-page implementation of the WordCraft host protocol. |
 | `app/src/main/assets/web/` | Trunk output staged here by CI (git-ignored; `.gitkeep` only). |
-| `app/src/main/java/ai/storyteller/wordcraft/` | `MainActivity` and the `BlobBridge` JS interface. |
+| `app/src/main/java/ai/storyteller/wordcraft/` | `MainActivity`, `KeyboardWebView` and the `BlobBridge` JS interface. |
 | `app/src/main/res/` | Manifest resources, launcher icons (generated), FileProvider/backup rules. |
 | `ci/copy_web_assets.sh` | Copies and validates a Trunk `dist/web` into the APK assets. |
 | `ci/generate_icons.py` | Regenerates every launcher-icon density from `ci/icons/wordcraft-1024.png`. |
